@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="WebServers">
+    <option name="servers">
+      <webServer id="147bc1c4-3e0c-4643-bec1-2e95764133f7" name="wiz-cons">
+        <fileTransfer accessType="SFTP" host="mlwiz.sogang.ac.kr" port="57503" sshConfigId="d2852dea-f840-4093-9251-5701eaf964ab" sshConfig="root@mlwiz.sogang.ac.kr:57503 password">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" passiveMode="true" shareSSLContext="true" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
+    </option>
+  </component>
+</project>

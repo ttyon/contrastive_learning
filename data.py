@@ -7,7 +7,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from dataloader import KVReader
 from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 from torchvision import models, transforms, utils
@@ -50,6 +49,38 @@ class VCDBPairDataset(Dataset):
         n = torch.stack([resize_axis(item, axis=0, new_size=self.padding_size, fill_value=0,
                                      random_sampling=self.random_sampling).transpose(-1, -2) for item in feat_n])
         return a, p, n, len_a, len_p, len_n
+
+
+class FeatureDataset(torch.utils.data.Dataset):
+    def __init__(self,
+                 vid2features,
+                 videos,
+                 padding_size=100,
+                 random_sampling=False):
+        super(FeatureDataset, self).__init__()
+        self.vid2features = vid2features
+        self.padding_size = padding_size
+        self.random_sampling = random_sampling
+        self.videos = videos
+        self.keys = self.vid2features.keys()
+
+    def __len__(self):
+        return len(self.videos)
+
+    def __getitem__(self, index):
+        if self.videos[index] in self.keys:
+            feat = self.vid2features[self.videos[index]][:]
+            len_feat = len(feat)
+            # print("len_feat :", len_feat)
+            # return torch.Tensor(feat), len_feat, index
+            # return resize_axis(feat, axis=0,
+            #                    new_size=len_feat, fill_value=0,
+            #                    random_sampling=self.random_sampling).transpose(-1, -2), len_feat, self.videos[index]
+            return resize_axis(feat, axis=0,
+                               new_size=self.padding_size, fill_value=0,
+                               random_sampling=self.random_sampling).transpose(-1, -2), len_feat, self.videos[index]
+        else:
+            return torch.Tensor([]), 0, 'None'
 
 
 class CC_WEB_VIDEO(object):
@@ -169,7 +200,8 @@ class FIVR(object):
 
     def __init__(self, version='200k'):
         self.version = version
-        with open('datasets/fivr.pickle', 'rb') as f:
+        with open('/mldisk/nfs_shared_/js/contrastive_learning/new_fivr.pickle', 'rb') as f:
+        # with open('/workspace/datasets/fivr.pickle', 'rb') as f:
             dataset = pk.load(f)
         self.annotation = dataset['annotation']
         self.queries = dataset[self.version]['queries']
@@ -195,6 +227,29 @@ class FIVR(object):
                     i += 1.0
                     s += i / ri
         return s / len(query_gt)
+
+    # def calculate_mAP(self, query, res, all_db, relevant_labels):
+    #     gt_sets = self.annotation[query]
+    #     query_gt = []
+    #     for label in relevant_labels:
+    #         if label in gt_sets:
+    #             query_gt.append(gt_sets[label])
+    #
+    #     query_gt = set(sum([gt_sets[label] for label in relevant_labels if label in gt_sets], []))
+    #     query_gt = query_gt.intersection(all_db)
+    #
+    #     i, ri, s = 0.0, 0, 0.0
+    #
+    #     if len(query_gt) == 0:  # empty set check
+    #         return None
+    #     for video in sorted(res.keys(), key=lambda x: res[x], reverse=True):
+    #         if video != query and video in all_db:
+    #             ri += 1
+    #             if video in query_gt:
+    #                 i += 1.0
+    #                 s += i / ri
+    #
+    #     return s / len(query_gt)
 
     def evaluate(self, similarities, all_db=None):
         if all_db is None:

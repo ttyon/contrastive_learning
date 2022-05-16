@@ -44,23 +44,31 @@ def load_video(video):
     return np.array(frames)
 
 def load_video_paths_ccweb(root='~/datasets/CC_WEB_VIDEO/'):
-    paths = sorted(glob.glob(root + 'Videos/*/*.*'))
+    paths = sorted(glob.glob(root + '/*.*'))
     vid2paths = {}
     for path in paths:
         vid2paths[path.split('/')[-1].split('.')[0]] = path
     return vid2paths
 
-def load_video_paths_vcdb(root='~/datasets/vcdb/'):
-    paths = sorted(glob.glob(root + 'core_dataset/*/*.*'))
+def load_video_paths_vcdb(root='/mldisk/nfs_shared_/MLVD/VCDB-core/videos/'):
+    paths = sorted(glob.glob(root + '*/*.*'))
+
     vid2paths_core = {}
     for path in paths:
         vid2paths_core[path.split('/')[-1].split('.')[0]] = path
         
-    paths = sorted(glob.glob(root + 'background_dataset/*/*.*'))
-    vid2paths_bg = {}
-    for path in paths:
-        vid2paths_bg[path.split('/')[-1].split('.')[0]] = path
-    return vid2paths_core, vid2paths_bg
+    # paths = sorted(glob.glob(root + 'background_dataset/*/*.*'))
+    # vid2paths_bg = {}
+    # for path in paths:
+    #     vid2paths_bg[path.split('/')[-1].split('.')[0]] = path
+    # return vid2paths_core, vid2paths_bg
+
+    return vid2paths_core
+
+def load_video_paths_fivr(vid2paths, root='~/datasets/FIVR/'):
+    for vid, path in tqdm(vid2paths.items()):
+        frames = load_video(path)
+        np.save(root + 'Frames/' + vid + '.npy', frames)
 
 def get_frames_ccweb(vid2paths, root='~/datasets/CC_WEB_VIDEO/'):
     for vid, path in tqdm(vid2paths.items()):
@@ -88,18 +96,21 @@ def load_video_paths_evve(root='~/datasets/evve/'):
         vid2paths[path.split('/')[-1].split('.')[0]] = path
     return vid2paths
 
+# CCWEB, FIVR-core
 def f(args):
     vid, path = args
     frames = load_video(path)
-    np.save('~/datasets/CC_WEB_VIDEO/Frames/' + vid + '.npy', frames)
-    
+    np.save('/mldisk/nfs_shared_/js/contrastive_learning/pre_processing/frames/fivr/distraction/' + vid + '.npy', frames)
+
+# VCDB
 def g(args):
     vid, path = args
     frames = load_video(path)
-    if not os.path.exists('~/datasets/vcdb/frames/core/'):
-        os.mkdir('~/datasets/vcdb/frames/core/')
-    np.save('~/datasets/vcdb/frames/core/' + vid + '.npy', frames)    
+    if not os.path.exists('/mldisk/nfs_shared_/js/contrastive_learning/pre_processing/vcdb_frames/core/'):
+        os.mkdir('/mldisk/nfs_shared_/js/contrastive_learning/pre_processing/vcdb_frames/core/')
+    np.save('/mldisk/nfs_shared_/js/contrastive_learning/pre_processing/vcdb_frames/core/' + vid + '.npy', frames)
 
+# VCDB - background (아마도 distraction 말하는 듯)
 def h(args):
     vid, path = args
     frames = load_video(path)
@@ -107,12 +118,26 @@ def h(args):
         os.mkdir('~/datasets/vcdb/frames/background_dataset/' + path.split('/')[-2] + '/')
     np.save('~/datasets/vcdb/frames/background_dataset/' + path.split('/')[-2] + '/' + vid + '.npy', frames)
 
+# FIVR
+def j(args):
+    vid, path = args
+    frames = load_video(path)
+    if not os.path.exists('/mldisk/nfs_shared_/js/contrastive_learning/pre_processing/vcdb_frames/core/'):
+        os.mkdir('/mldisk/nfs_shared_/js/contrastive_learning/pre_processing/vcdb_frames/core/')
+    np.save('/mldisk/nfs_shared_/js/contrastive_learning/pre_processing/vcdb_frames/core/' + vid + '.npy', frames)
+
+
 if __name__ == "__main__":
-    vid2paths_core, vid2paths_bg = load_video_paths_vcdb()
+    # vid2paths_core, vid2paths_bg = load_video_paths_vcdb(root='/mldisk/nfs_shared_/MLVD/VCDB-core/videos/core_dataset')
+    vid2paths_core = load_video_paths_vcdb(root='/mldisk/nfs_shared_/MLVD/FIVR/videos/distraction/')
+    # vid2paths_core = load_video_paths_ccweb(root='/mldisk/nfs_shared_/MLVD/FIVR/videos/core/')
+    print("fivr")
     pool = Pool(4)
     for vid, path in tqdm(vid2paths_core.items()):
-        a = np.load('~/datasets/vcdb/frames/core/' + vid + '.npy')
-        if a.shape[0] == 0 or not os.path.exists('~/datasets/vcdb/frames/core/' + vid + '.npy'):
+        args = vid, path
+        f(args)
+        a = np.load('/mldisk/nfs_shared_/js/contrastive_learning/pre_processing/frames/fivr/distraction/' + vid + '.npy')
+        if a.shape[0] == 0 or not os.path.exists('/mldisk/nfs_shared_/js/contrastive_learning/pre_processing/frames/fivr/distraction/' + vid + '.npy'):
             pool.apply_async(h, ((vid, path),))
     pool.close()
     pool.join()

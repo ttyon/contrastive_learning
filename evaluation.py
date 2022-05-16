@@ -10,13 +10,18 @@ from networkx.algorithms.dag import dag_longest_path
 from scipy.spatial.distance import cdist
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+import torch.nn.functional as F
 
 from data import FeatureDataset
 from model import (GRUModule, LSTMModule, NetVLAD, NeXtVLAD, TCA, VideoComparator)
 from utils import resize_axis
 
+# train gpu 설정 방법
+os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
+os.environ["CUDA_VISIBLE_DEVICES"]="1"
 
-def calculate_similarities(query_features, target_feature, metric='euclidean', comparator=None):
+
+def calculate_similarities(query_features, target_feature, metric='cosine', comparator=None):
     """
       Args:
         query_features: global features of the query videos
@@ -31,7 +36,8 @@ def calculate_similarities(query_features, target_feature, metric='euclidean', c
             cdist(query_features, target_feature, metric='euclidean'))
         for i, v in enumerate(query_features):
             sim = np.round(1 - dist[i] / dist.max(), decimals=6)
-            similarities.append(sim.item())
+            # similarities.append(sim.item())
+            similarities.append(sim)
     elif metric == 'cosine':
         dist = np.nan_to_num(
             cdist(query_features, target_feature, metric='cosine'))
@@ -184,6 +190,56 @@ def tn(query_features, refer_features, top_K=5, min_sim=0.80, max_step=10):
     return score
 
 
+def not_TCA_forward(x, num_frames):
+    # N : 1, C : 1024, T : 300
+    x = x.permute(2, 0, 1)  # (T, N, C)
+    # T : 300, N : 1, C : 1024
+    # num_frames : 실제 video의 프레임 수
+
+    T, N, C = x.shape[:3]  # (T, N, C)
+    # mask padded frame feature
+    if len(num_frames.shape) == 1:
+        num_frames = num_frames.unsqueeze(1)
+    frame_mask = (
+            0 < num_frames - torch.arange(0, T).cuda()
+    ).float()  # (N, T)
+
+    # print("frame_mask.shape :", frame_mask.shape)
+    # print("22222 :", frame_mask.unsqueeze(-1).shape)
+
+    output = x.permute(1, 0, 2)  # (N, T, C)
+    # N : 1, T : 300, C : 1024
+
+    output = output * frame_mask.unsqueeze(-1)
+    frame_count = torch.sum(frame_mask, dim=-1, keepdim=True)  # (N, 1)
+    output = torch.sum(output, dim=-2) / frame_count  # (N, C)
+
+    # L2 normalize (N, output_dim) IMPORTANT!!!
+    embedding = F.normalize(output, p=2, dim=1)
+    return embedding
+
+
+def not_TCA_encode(x, num_frames):
+    x = x.permute(2, 0, 1)  # (T, N, C)
+
+    T, N, C = x.shape[:3]  # (T, N, C)
+    # mask padded frame feature
+    if len(num_frames.shape) == 1:
+        num_frames = num_frames.unsqueeze(1)
+    frame_mask = (
+            0 < num_frames - torch.arange(0, T).cuda()
+    ).float()  # (N, T)
+
+    output = x.permute(1, 0, 2)  # (N, T, C)
+    output = output * frame_mask.unsqueeze(-1)
+    frame_count = torch.sum(frame_mask, dim=-1)  # (N)
+    output = torch.narrow(output, 1, 0, int(frame_count.item()))
+
+    # L2 normalize IMPORTANT!!!
+    output = F.normalize(output, p=2, dim=2)  # (N, T, C)
+    return output
+
+
 def query_vs_database(model, dataset, args):
     model = model.eval()
     comparator = None
@@ -210,9 +266,13 @@ def query_vs_database(model, dataset, args):
             if args.cuda:
                 feature = feature.cuda()
                 feature_len = feature_len.cuda()
-            # queries.append(model(feature, feature_len).detach().cpu().numpy()[0])
-            queries.append(model.encode(
-                feature, feature_len).detach().cpu().numpy()[0])
+            # queries.append(model(feature, feature_len).detach().cpu().numpy()[0])  # 원본
+            queries.append(not_TCA_forward(feature, feature_len).detach().cpu().numpy()[0])  # TCA 사용 X
+
+            # queries.append(model.encode(feature, feature_len).detach().cpu().numpy()[0])
+            # queries.append(not_TCA_encode(feature, feature_len).detach().cpu().numpy()[0])
+
+            # queries.append(model.encode(feature, feature_len))
             queries_ids.append(query_id)
             all_db.add(query_id)
     queries = np.array(queries)
@@ -230,12 +290,16 @@ def query_vs_database(model, dataset, args):
             if args.cuda:
                 feature = feature.cuda()
                 feature_len = feature_len.cuda()
-            # embedding = model(feature, feature_len).detach().cpu().numpy()
-            embedding = model.encode(
-                feature, feature_len).detach().cpu().numpy()[0]
+            # embedding = model(feature, feature_len).detach().cpu().numpy()  # 원본
+            embedding = not_TCA_forward(feature, feature_len).detach().cpu().numpy()  # TCA 사용 x
+
+            # embedding = model.encode(
+            #     feature, feature_len).detach().cpu().numpy()[0]
+            # embedding = not_TCA_encode(feature, feature_len).detach().cpu().numpy()
             all_db.add(video_id)
             sims = calculate_similarities(
                 queries, embedding, args.metric, comparator)
+
             for i, s in enumerate(sims):
                 similarities[queries_ids[i]][video_id] = float(s)
 
@@ -244,10 +308,9 @@ def query_vs_database(model, dataset, args):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('-d', '--dataset', type=str, required=True,
+    parser.add_argument('-d', '--dataset', type=str, required=False, default='FIVR-200K',
                         help='Name of evaluation dataset. Options: CC_WEB_VIDEO, VCDB, '
                              '\"FIVR-200K\", \"FIVR-5K\", \"EVVE\"')
-
     parser.add_argument('-pc', '--pca_components', type=int, default=1024,
                         help='Number of components of the PCA module.')
     parser.add_argument('-nc', '--num_clusters', type=int, default=256,
@@ -256,19 +319,19 @@ def main():
                         help='Dimention of the output embedding of the NetVLAD model')
     parser.add_argument('-nl', '--num_layers', type=int, default=1,
                         help='Number of layers')
-    parser.add_argument('-mp', '--model_path', type=str, required=True,
+    parser.add_argument('-mp', '--model_path', type=str, required=False, default='/mldisk/nfs_shared_/js/contrastive_learning/model/vcdb_resnet50_imac_batch64_padding64_negnum16_momentum0/epoch5.pth',
                         help='Directory of the .pth file containing model state dicts')
 
-    parser.add_argument('-fp', '--feature_path', type=str, required=True,
+    parser.add_argument('-fp', '--feature_path', type=str, required=False, default='/workspace/pre_processing/fivr_resnet50_imac_pca1024.hdf5',
                         help='Path to the .hdf5 file that contains the features of the dataset')
-    parser.add_argument('-ps', '--padding_size', type=int, default=100,
+    parser.add_argument('-ps', '--padding_size', type=int, default=300,
                         help='Padding size of the input data at temporal axis')
     parser.add_argument('-rs', '--random_sampling', action='store_true',
                         help='Flag that indicates that the frames in a video are random sampled if max frame limit is exceeded')
-    parser.add_argument('-m', '--metric', type=str, default='euclidean',
+    parser.add_argument('-m', '--metric', type=str, default='cosine',
                         help='Metric that will be used for similarity calculation')
     parser.add_argument('-uc', '--use_comparator', action='store_true',
-                        help='Flag that indicates that the video comparator is used')
+                        help='Flag that indicates that the video comparator is ubgvsed')
     args = parser.parse_args()
     args.cuda = torch.cuda.is_available()
 
@@ -292,6 +355,8 @@ def main():
         raise Exception('[ERROR] Not supported evaluation dataset. '
                         'Supported options: \"CC_WEB_VIDEO\", \"VCDB\", \"FIVR-200K\", \"FIVR-5K\", \"EVVE\"')
 
+    # print("not TCA!!!!")
+    print()
     model = TCA(feature_size=args.pca_components, nlayers=args.num_layers)
     model.load_state_dict(torch.load(args.model_path))
     eval_function(model, dataset, args)

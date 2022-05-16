@@ -10,10 +10,9 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, BatchSampler
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
-
 import horovod.torch as hvd
 import utils
-from data import VCDBPairDataset
+from data import VCDBPairDataset, FIVR
 from model import NetVLAD, MoCo, NeXtVLAD, LSTMModule, GRUModule, TCA
 
 np.random.seed(0)
@@ -24,6 +23,9 @@ torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 torch.multiprocessing.set_sharing_strategy('file_system')
 
+# train gpu 설정 방법
+os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
+os.environ["CUDA_VISIBLE_DEVICES"]="1"
 
 def train(args):
     # Horovod: initialize library.
@@ -37,14 +39,12 @@ def train(args):
     kwargs = {'num_workers': args.num_workers,
               'pin_memory': True} if args.cuda else {}
 
-
     train_dataset = VCDBPairDataset(annotation_path=args.annotation_path, feature_path=args.feature_path,
                                     padding_size=args.padding_size, random_sampling=args.random_sampling, neg_num=args.neg_num)
 
     # Horovod: use DistributedSampler to partition the training data.
     train_sampler = DistributedSampler(
         train_dataset, num_replicas=hvd.size(), rank=hvd.rank(), shuffle=True)
-
 
     train_loader = DataLoader(train_dataset, batch_size=args.batch_sz,
                               sampler=train_sampler, drop_last=True, **kwargs)
@@ -73,9 +73,12 @@ def train(args):
                                     momentum=args.momentum,
                                     weight_decay=args.weight_decay)
     else:
+        print("###############ADAM###############")
+        print(f"###############{args.learning_rate}###############")
         optimizer = torch.optim.Adam(model.parameters(),
                                      lr=args.learning_rate * lr_scaler,
                                      weight_decay=args.weight_decay)
+
     # Horovod: broadcast parameters & optimizer state.
     hvd.broadcast_parameters(model.state_dict(), root_rank=0)
     hvd.broadcast_optimizer_state(optimizer, root_rank=0)
@@ -118,19 +121,21 @@ def train(args):
 
         scheduler.step()
 
-        if hvd.rank() == 0 and epoch % 10 == 0:
+        # if hvd.rank() == 0 and epoch % 10 == 0:
+        if hvd.rank() == 0 and epoch % 5 == 0:
             print("Epoch complete in: " + str(datetime.now() - start))
             print("Saving model...")
-            torch.save(model.encoder_q.state_dict(), 'models/model.pth')
+            torch.save(model.encoder_q.state_dict(), f'{args.model_path}/epoch{epoch}.pth')
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('-ap', '--annotation_path', type=str, required=True,
+    ## original required : -ap, -fp, -mp
+    parser.add_argument('-ap', '--annotation_path', type=str, required=False, default='/workspace/datasets/new_vcdb.pickle',
                         help='Path to the .pk file that contains the annotations of the train set')
-    parser.add_argument('-fp', '--feature_path', type=str, required=True,
+    parser.add_argument('-fp', '--feature_path', type=str, required=False, default='/workspace/pre_processing/vcdb_resnet50_imac_pca_1024.hdf5',
                         help='Path to the kv dataset that contains the features of the train set')
-    parser.add_argument('-mp', '--model_path', type=str, required=True,
+    parser.add_argument('-mp', '--model_path', type=str, required=False, default='/mldisk/nfs_shared_/js/contrastive_learning/model/vcdb_resnet50_imac_batch64_padding64_negnum16',
                         help='Directory where the generated files will be stored')
 
     parser.add_argument('-nc', '--num_clusters', type=int, default=256,
@@ -141,16 +146,16 @@ def main():
                         help='Number of layers')
     parser.add_argument('-ni', '--normalize_input', action='store_true',
                         help='If true, descriptor-wise L2 normalization is applied to input')
-    parser.add_argument('-nn', '--neg_num', type=int, default=1,
+    parser.add_argument('-nn', '--neg_num', type=int, default=16,
                         help='Number of negative samples of each batch')
 
-    parser.add_argument('-e', '--epochs', type=int, default=5,
+    parser.add_argument('-e', '--epochs', type=int, default=40,
                         help='Number of epochs to train the DML network. Default: 5')
-    parser.add_argument('-bs', '--batch_sz', type=int, default=256,
+    parser.add_argument('-bs', '--batch_sz', type=int, default=64,
                         help='Number of triplets fed every training iteration. '
                              'Default: 256')
-    parser.add_argument('-lr', '--learning_rate', type=float, default=1e-4,
-                        help='Learning rate of the DML network. Default: 10^-4')
+    parser.add_argument('-lr', '--learning_rate', type=float, default=1e-5,
+                        help='Learning rate of the DML network. Default: 10^-5')
     parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
                         help='momentum of SGD solver')
     parser.add_argument('-wd', '--weight_decay', type=float, default=1e-4,
@@ -158,7 +163,7 @@ def main():
 
     parser.add_argument('-pc', '--pca_components', type=int, default=1024,
                         help='Number of components of the PCA module.')
-    parser.add_argument('-ps', '--padding_size', type=int, default=300,
+    parser.add_argument('-ps', '--padding_size', type=int, default=64,
                         help='Padding size of the input data at temporal axis.')
     parser.add_argument('-rs', '--random_sampling', action='store_true',
                         help='Flag that indicates that the frames in a video are random sampled if max frame limit is exceeded')
@@ -170,6 +175,7 @@ def main():
     # moco specific configs:
     parser.add_argument('--moco_k', default=65536, type=int,
                         help='queue size; number of negative keys (default: 65536)')
+    # moco.m 초기 값은 0.999이고 지금 내가 새로 테스트 하는 건 0이다.
     parser.add_argument('--moco_m', default=0.999, type=float,
                         help='moco momentum of updating key encoder (default: 0.999)')
     parser.add_argument('--moco_t', default=0.07, type=float,
@@ -184,8 +190,9 @@ def main():
                         help='use adasum algorithm to do reduction')
 
     args = parser.parse_args()
+    print(f'feature_path : {args.feature_path} \nmodel_path : {args.model_path} \nmomentum : {args.moco_m}')
     args.cuda = torch.cuda.is_available()
-
+    print(args.cuda)
     train(args)
 
 
